@@ -1,0 +1,14 @@
+Junba R6 static validation
+==========================
+- AndroidManifest.xml: XML parse OK
+- styles.xml: XML parse OK
+- Java brace balance: OK
+- javac parser pass: no Java syntax-form errors detected (Android classes unavailable locally, so full Android compile is delegated to GitHub Actions)
+- kotlinc parser pass: no Kotlin syntax-form errors detected (Android/Whisper SDK classes unavailable locally)
+- Android 16 ScrollBarDrawable workaround retained:
+  * no setScrollbarFadingEnabled(false)
+  * no setVerticalScrollBarEnabled(true)
+- R6 source preflight checks included in GitHub Actions
+- Build order: clean -> compile Kotlin/Java -> assembleDebug -> upload APK immediately -> optional diagnostics
+
+Full Android SDK/AAR link validation must be confirmed by GitHub Actions before installing the APK.

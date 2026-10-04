@@ -1,0 +1,143 @@
+name: Build Junba Android APK v3.8.2 R6
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android-v3.8.2-r6.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android-v3.8.2-r6.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: junba-v382-apk-r6-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-apk-r6:
+    name: Clean Build APK R6
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Locate Android sdkmanager
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER=""
+          for p in "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "$SDK_ROOT/cmdline-tools/bin/sdkmanager"; do
+            if [ -x "$p" ]; then SDKMANAGER="$p"; break; fi
+          done
+          if [ -z "$SDKMANAGER" ] && [ -d "$SDK_ROOT" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT" -type f -name sdkmanager -perm -111 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            SDK_ROOT="$HOME/android-sdk"
+            mkdir -p "$SDK_ROOT/cmdline-tools"
+            curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+            rm -rf /tmp/android-cli && mkdir -p /tmp/android-cli
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/android-cli
+            mv /tmp/android-cli/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+            SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: R6 source preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f android/app/src/main/java/tw/junba/transcriber/FullTranscriberActivity.java
+          test -f android/app/src/main/java/tw/junba/transcriber/WhisperBatchEngine.kt
+          test -f android/app/src/main/java/tw/junba/transcriber/WavChunker.kt
+          test -f android/app/src/main/java/tw/junba/transcriber/TraditionalChineseConverter.java
+          test -f android/app/src/main/java/tw/junba/transcriber/KtvHtmlBuilder.java
+          test -f android/app/src/main/java/tw/junba/transcriber/TranscriptionKeepAliveService.java
+          grep -q 'versionCode = 391' android/app/build.gradle.kts
+          grep -q '3.8.2-apk-r6-background-ktv' android/app/build.gradle.kts
+          grep -q 'FOREGROUND_SERVICE_MEDIA_PROCESSING' android/app/src/main/AndroidManifest.xml
+          grep -q 'android:foregroundServiceType="mediaProcessing"' android/app/src/main/AndroidManifest.xml
+          grep -q 'WhisperBatchEngine.transcribeBlocking' android/app/src/main/java/tw/junba/transcriber/FullTranscriberActivity.java
+          grep -q 'TraditionalChineseConverter.toTraditionalTaiwan' android/app/src/main/java/tw/junba/transcriber/FullTranscriberActivity.java
+          grep -q 'KtvHtmlBuilder.build' android/app/src/main/java/tw/junba/transcriber/FullTranscriberActivity.java
+          if grep -R -q 'setScrollbarFadingEnabled(false)' android/app/src/main; then
+            echo 'ERROR: Android 16 scrollbar crash trigger returned'
+            exit 1
+          fi
+          if grep -R -q 'setVerticalScrollBarEnabled(true)' android/app/src/main; then
+            echo 'ERROR: R6 must not explicitly enable framework scrollbars'
+            exit 1
+          fi
+
+      - name: Clean compile and build APK
+        shell: bash
+        run: gradle -p android clean :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:assembleDebug --no-daemon --stacktrace --refresh-dependencies
+
+      - name: Package APK immediately
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p r
+          cp android/app/build/outputs/apk/debug/app-debug.apk 'r/Junba-R6.apk'
+          sha256sum 'r/Junba-R6.apk' > r/SHA256.txt
+          cat > r/BUILD_CHECKS.txt <<'TXT'
+          Junba Android R6
+          - R5 Android 16/vivo scrollbar crash fix retained
+          - Foreground media-processing service + partial CPU wake lock
+          - Battery-optimization settings shortcut + notification permission
+          - Whisper 5-minute safe chunks when PCM WAV chunking is available
+          - Pause/resume/stop at safe boundaries with partial bundle settlement
+          - Chunk-based real progress and learned ETA (RTF saved per Whisper model)
+          - Offline Traditional Chinese conversion via Android ICU + fallback map
+          - Full time+text preview; untimed cloud text gets clearly marked estimated timeline
+          - Auto bundle: original audio + TXT + Markdown + VTT + KTV HTML
+          - KTV HTML supports audio pick, click-to-seek, active transcript follow
+          TXT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Junba-v382-APK-R6
+          path: |
+            r/Junba-R6.apk
+            r/SHA256.txt
+            r/BUILD_CHECKS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Optional APK diagnostics
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          if [ ! -f "$APK" ]; then exit 0; fi
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt" dump badging "$APK" || true
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner" verify --verbose "$APK" || true
+          unzip -l "$APK" | grep 'lib/arm64-v8a/' || true
